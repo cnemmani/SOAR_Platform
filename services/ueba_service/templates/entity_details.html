@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UEBA - Entity Analysis</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .card { background: rgba(255,255,255,0.95); border-radius: 20px; padding: 30px; margin-bottom: 20px; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; flex-wrap: wrap; gap: 15px; }
+        .back-btn { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; padding: 10px 20px; border-radius: 12px; cursor: pointer; font-weight: 500; }
+        .risk-score { font-size: 48px; font-weight: bold; margin: 20px 0; }
+        .risk-critical { color: #e74c3c; }
+        .risk-high { color: #e67e22; }
+        .risk-medium { color: #f39c12; }
+        .risk-low { color: #27ae60; }
+        .info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; margin: 20px 0; }
+        .info-item { background: #f8f9fa; padding: 15px; border-radius: 12px; }
+        .info-label { font-size: 12px; color: #666; margin-bottom: 5px; }
+        .info-value { font-size: 18px; font-weight: 600; }
+        .chart-container { height: 300px; margin-top: 20px; }
+        @media (max-width: 768px) { .info-grid { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div class="header">
+                <h2><i class="fas fa-chart-line"></i> Entity Behavior Analysis</h2>
+                <button class="back-btn" onclick="window.location.href='/'"><i class="fas fa-arrow-left"></i> Back to Dashboard</button>
+            </div>
+            <div id="entityContent">Loading...</div>
+        </div>
+    </div>
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const entityId = urlParams.get('id');
+        const entityType = urlParams.get('type') || 'ip';
+        
+        async function loadEntityDetails() {
+            try {
+                const [riskRes, profileRes, trendRes, peerRes] = await Promise.all([
+                    fetch(`/api/ueba/risk/${entityType}/${entityId}`),
+                    fetch(`/api/ueba/profile/${entityType}/${entityId}`),
+                    fetch(`/api/ueba/trend/${entityType}/${entityId}?days=7`),
+                    fetch(`/api/ueba/peer-group/${entityType}/${entityId}`)
+                ]);
+                
+                const riskData = await riskRes.json();
+                const profileData = await profileRes.json();
+                const trendData = await trendRes.json();
+                const peerData = await peerRes.json();
+                
+                const riskClass = (riskData.risk_level || 'low').toLowerCase();
+                document.getElementById('entityContent').innerHTML = `
+                    <div class="risk-score risk-${riskClass}">${riskData.risk_score || 0}/100</div>
+                    <div style="margin-bottom: 20px;">Risk Level: <strong>${riskData.risk_level || 'Unknown'}</strong></div>
+                    <div class="info-grid">
+                        <div class="info-item"><div class="info-label">Entity ID</div><div class="info-value">${entityId}</div></div>
+                        <div class="info-item"><div class="info-label">Entity Type</div><div class="info-value">${entityType.toUpperCase()}</div></div>
+                        <div class="info-item"><div class="info-label">Peer Group</div><div class="info-value">${riskData.peer_group || 'Unknown'}</div></div>
+                        <div class="info-item"><div class="info-label">Total Alerts</div><div class="info-value">${riskData.total_alerts || 0}</div></div>
+                        <div class="info-item"><div class="info-label">First Seen</div><div class="info-value">${riskData.first_seen ? new Date(riskData.first_seen).toLocaleDateString() : 'Unknown'}</div></div>
+                        <div class="info-item"><div class="info-label">Last Seen</div><div class="info-value">${riskData.last_seen ? new Date(riskData.last_seen).toLocaleDateString() : 'Unknown'}</div></div>
+                        <div class="info-item"><div class="info-label">Peer Analysis</div><div class="info-value">${peerData.is_outlier ? '⚠️ Outlier' : 'Normal'} (${peerData.risk_deviation ? peerData.risk_deviation.toFixed(1) : 0} deviation)</div></div>
+                    </div>
+                    <div class="chart-container" id="trendChart"></div>
+                `;
+                
+                if (trendData.daily_metrics) {
+                    const chart = echarts.init(document.getElementById('trendChart'));
+                    chart.setOption({
+                        tooltip: { trigger: 'axis' },
+                        xAxis: { type: 'category', data: trendData.daily_metrics.map(m => m.date) },
+                        yAxis: { type: 'value', name: 'Alert Count' },
+                        series: [{ data: trendData.daily_metrics.map(m => m.alert_count), type: 'line', smooth: true, lineStyle: { color: '#667eea', width: 3 }, areaStyle: { opacity: 0.3 } }]
+                    });
+                }
+            } catch(e) { document.getElementById('entityContent').innerHTML = '<div style="text-align: center; padding: 40px;">Error loading entity data</div>'; }
+        }
+        loadEntityDetails();
+    </script>
+</body>
+</html>

@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UEBA - User & Entity Behavior Analytics</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
+        .dashboard-container { max-width: 1400px; margin: 0 auto; }
+        
+        /* Header */
+        .header { background: rgba(255,255,255,0.95); backdrop-filter: blur(10px); border-radius: 20px; padding: 20px 30px; margin-bottom: 25px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; box-shadow: 0 10px 40px rgba(0,0,0,0.1); }
+        .logo-section h1 { font-size: 24px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .logo-section p { font-size: 12px; color: #666; margin-top: 5px; }
+        .stats-badge { display: flex; gap: 15px; align-items: center; flex-wrap: wrap; }
+        .badge { background: #f8f9fa; padding: 8px 16px; border-radius: 12px; font-size: 12px; font-weight: 500; }
+        .badge i { margin-right: 5px; }
+        .refresh-btn { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; padding: 8px 20px; border-radius: 12px; cursor: pointer; font-weight: 500; transition: transform 0.2s; }
+        .refresh-btn:hover { transform: scale(1.02); }
+        
+        /* KPI Cards */
+        .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 25px; }
+        .kpi-card { background: rgba(255,255,255,0.95); backdrop-filter: blur(10px); border-radius: 20px; padding: 20px; transition: transform 0.3s; cursor: pointer; }
+        .kpi-card:hover { transform: translateY(-5px); box-shadow: 0 15px 40px rgba(0,0,0,0.15); }
+        .kpi-icon { font-size: 32px; margin-bottom: 10px; }
+        .kpi-value { font-size: 32px; font-weight: 700; margin: 10px 0; }
+        .kpi-label { font-size: 14px; color: #666; font-weight: 500; }
+        
+        /* Charts */
+        .charts-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; margin-bottom: 25px; }
+        .chart-card { background: rgba(255,255,255,0.95); backdrop-filter: blur(10px); border-radius: 20px; padding: 20px; }
+        .chart-title { font-size: 16px; font-weight: 600; margin-bottom: 20px; display: flex; align-items: center; gap: 8px; color: #333; }
+        .chart-container { height: 300px; width: 100%; }
+        
+        /* Table Card */
+        .table-card { background: rgba(255,255,255,0.95); backdrop-filter: blur(10px); border-radius: 20px; padding: 20px; margin-bottom: 25px; }
+        .table-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 15px; }
+        .search-box { padding: 10px 15px; border: 1px solid #e0e0e0; border-radius: 12px; width: 250px; font-size: 14px; }
+        .risk-table { width: 100%; border-collapse: collapse; }
+        .risk-table th, .risk-table td { padding: 12px; text-align: left; border-bottom: 1px solid #f0f0f0; }
+        .risk-table th { font-weight: 600; color: #666; font-size: 13px; }
+        .risk-table tr:hover { background: #f8f9fa; }
+        .risk-level { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+        .risk-critical { background: #e74c3c; color: white; }
+        .risk-high { background: #e67e22; color: white; }
+        .risk-medium { background: #f39c12; color: white; }
+        .risk-low { background: #27ae60; color: white; }
+        .ip-address { font-family: monospace; font-size: 13px; }
+        
+        /* Anomaly List */
+        .anomaly-list { max-height: 300px; overflow-y: auto; }
+        .anomaly-item { background: #f8f9fa; padding: 15px; border-radius: 12px; margin-bottom: 10px; border-left: 4px solid #e74c3c; }
+        .anomaly-title { font-weight: 600; margin-bottom: 5px; }
+        .anomaly-desc { font-size: 12px; color: #666; }
+        
+        /* Footer */
+        .footer { text-align: center; padding: 20px; color: rgba(255,255,255,0.8); font-size: 12px; }
+        
+        @media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } .kpi-grid { grid-template-columns: repeat(2, 1fr); } .header { flex-direction: column; text-align: center; } }
+    </style>
+</head>
+<body>
+    <div class="dashboard-container">
+        <div class="header">
+            <div class="logo-section">
+                <h1><i class="fas fa-chart-line"></i> UEBA Analytics</h1>
+                <p>User & Entity Behavior Analytics | Real-time Risk Detection</p>
+            </div>
+            <div class="stats-badge">
+                <div class="badge"><i class="fas fa-database"></i> <span id="entityCount">-</span> Entities</div>
+                <div class="badge"><i class="fas fa-chart-line"></i> <span id="riskCount">-</span> High Risk</div>
+                <button class="refresh-btn" onclick="refreshAll()"><i class="fas fa-sync-alt"></i> Refresh</button>
+            </div>
+        </div>
+
+        <div class="kpi-grid">
+            <div class="kpi-card">
+                <div class="kpi-icon"><i class="fas fa-users"></i></div>
+                <div class="kpi-value" id="totalEntities">-</div>
+                <div class="kpi-label">Total Entities Analyzed</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-icon"><i class="fas fa-exclamation-triangle"></i></div>
+                <div class="kpi-value" id="criticalRisk">-</div>
+                <div class="kpi-label">Critical Risk Entities</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-icon"><i class="fas fa-chart-line"></i></div>
+                <div class="kpi-value" id="avgRiskScore">-</div>
+                <div class="kpi-label">Average Risk Score</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-icon"><i class="fas fa-bell"></i></div>
+                <div class="kpi-value" id="anomalyCount">-</div>
+                <div class="kpi-label">Active Anomalies</div>
+            </div>
+        </div>
+
+        <div class="charts-grid">
+            <div class="chart-card">
+                <div class="chart-title"><i class="fas fa-chart-pie"></i> Risk Distribution</div>
+                <div id="riskChart" class="chart-container"></div>
+            </div>
+            <div class="chart-card">
+                <div class="chart-title"><i class="fas fa-chart-line"></i> Risk Trend (Top Entity)</div>
+                <div id="trendChart" class="chart-container"></div>
+            </div>
+        </div>
+
+        <div class="table-card">
+            <div class="table-header">
+                <div class="chart-title"><i class="fas fa-bell"></i> Recent Anomalies</div>
+            </div>
+            <div id="anomaliesList" class="anomaly-list">
+                <div style="text-align: center; padding: 20px;">Loading anomalies...</div>
+            </div>
+        </div>
+
+        <div class="table-card">
+            <div class="table-header">
+                <div class="chart-title"><i class="fas fa-skull-crossbones"></i> Top Risk Entities</div>
+                <input type="text" class="search-box" id="searchInput" placeholder="Search IP address..." onkeyup="filterTable()">
+            </div>
+            <div style="overflow-x: auto;">
+                <table class="risk-table" id="riskTable">
+                    <thead><tr><th>IP Address</th><th>Risk Score</th><th>Risk Level</th><th>Total Alerts</th><th>Avg Severity</th><th>Last Seen</th><th>Actions</th></tr></thead>
+                    <tbody id="riskTableBody"><tr><td colspan="7" style="text-align: center;">Loading...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>UEBA Microservice v1.0 | Real-time Behavioral Analytics | Powered by ZelarXDR</p>
+        </div>
+    </div>
+
+    <script>
+        let riskChart = null, trendChart = null;
+        let allEntities = [];
+
+        async function refreshAll() { await Promise.all([loadSummary(), loadRiskEntities(), loadAnomalies(), loadTrendData()]); }
+
+        async function loadSummary() {
+            try {
+                const response = await fetch('/api/ueba/summary');
+                const data = await response.json();
+                document.getElementById('totalEntities').textContent = data.total_entities_analyzed || 0;
+                document.getElementById('criticalRisk').textContent = data.critical_risk || 0;
+                document.getElementById('entityCount').textContent = data.total_entities_analyzed || 0;
+                document.getElementById('riskCount').textContent = (data.critical_risk || 0) + (data.high_risk || 0);
+                updateRiskChart(data);
+            } catch(e) { console.error(e); }
+        }
+
+        function updateRiskChart(data) {
+            const dom = document.getElementById('riskChart');
+            if (riskChart) riskChart.dispose();
+            riskChart = echarts.init(dom);
+            riskChart.setOption({
+                tooltip: { trigger: 'item' },
+                legend: { top: '5%', left: 'center' },
+                series: [{
+                    name: 'Risk Distribution', type: 'pie', radius: ['40%', '70%'],
+                    data: [
+                        { value: data.critical_risk || 0, name: 'Critical', itemStyle: { color: '#e74c3c' } },
+                        { value: data.high_risk || 0, name: 'High', itemStyle: { color: '#e67e22' } },
+                        { value: data.medium_risk || 0, name: 'Medium', itemStyle: { color: '#f39c12' } },
+                        { value: data.low_risk || 0, name: 'Low', itemStyle: { color: '#27ae60' } }
+                    ]
+                }]
+            });
+        }
+
+        async function loadTrendData() {
+            try {
+                const response = await fetch('/api/ueba/top-risk?limit=5');
+                const data = await response.json();
+                if (data.entities && data.entities.length) {
+                    const topIp = data.entities[0].ip;
+                    const trendRes = await fetch(`/api/ueba/trend/ip/${topIp}?days=7`);
+                    const trendData = await trendRes.json();
+                    if (trendData.daily_metrics) {
+                        const dom = document.getElementById('trendChart');
+                        if (trendChart) trendChart.dispose();
+                        trendChart = echarts.init(dom);
+                        trendChart.setOption({
+                            tooltip: { trigger: 'axis' },
+                            xAxis: { type: 'category', data: trendData.daily_metrics.map(m => m.date) },
+                            yAxis: { type: 'value', name: 'Alert Count' },
+                            series: [{ data: trendData.daily_metrics.map(m => m.alert_count), type: 'line', smooth: true, lineStyle: { color: '#667eea', width: 3 }, areaStyle: { opacity: 0.3 } }]
+                        });
+                    }
+                }
+            } catch(e) { console.error(e); }
+        }
+
+        async function loadRiskEntities() {
+            try {
+                const response = await fetch('/api/ueba/top-risk?limit=50');
+                const data = await response.json();
+                allEntities = data.entities || [];
+                renderRiskTable(allEntities);
+                const avgRisk = allEntities.reduce((s, e) => s + e.risk_score, 0) / (allEntities.length || 1);
+                document.getElementById('avgRiskScore').textContent = avgRisk.toFixed(1);
+            } catch(e) { console.error(e); }
+        }
+
+        function renderRiskTable(entities) {
+            const tbody = document.getElementById('riskTableBody');
+            if (!entities || !entities.length) { tbody.innerHTML = '<tr><td colspan="7" style="text-align: center;">No entities found</td></tr>'; return; }
+            tbody.innerHTML = entities.map(e => `
+                <tr>
+                    <td class="ip-address"><i class="fas fa-network-wired"></i> ${e.ip}</td>
+                    <td><strong>${e.risk_score}</strong>/100</td>
+                    <td><span class="risk-level risk-${e.risk_level.toLowerCase()}">${e.risk_level}</span></td>
+                    <td>${e.total_alerts}</td>
+                    <td>${e.avg_severity}</td>
+                    <td>${new Date(e.last_seen).toLocaleDateString()}</td>
+                    <td><button class="refresh-btn" style="padding: 5px 10px; font-size: 11px;" onclick="viewEntity('${e.ip}')">Analyze</button></td>
+                </tr>
+            `).join('');
+        }
+
+        async function loadAnomalies() {
+            try {
+                const response = await fetch('/api/ueba/anomalies?window=1%20hour');
+                const data = await response.json();
+                const anomalies = data.anomalies || [];
+                const container = document.getElementById('anomaliesList');
+                document.getElementById('anomalyCount').textContent = anomalies.length;
+                if (!anomalies.length) { container.innerHTML = '<div class="anomaly-item" style="border-left-color: #27ae60;"><div class="anomaly-title">No anomalies detected</div><div class="anomaly-desc">All entities behaving normally</div></div>'; return; }
+                container.innerHTML = anomalies.map(a => `
+                    <div class="anomaly-item">
+                        <div class="anomaly-title"><i class="fas fa-exclamation-circle"></i> ${a.type} <span style="float: right; font-size: 11px; color: ${a.severity === 'HIGH' ? '#e74c3c' : '#f39c12'}">${a.severity}</span></div>
+                        <div class="anomaly-desc">${a.description}</div>
+                        <div class="anomaly-desc" style="margin-top: 5px;"><i class="fas fa-network-wired"></i> Entity: ${a.entity}</div>
+                    </div>
+                `).join('');
+            } catch(e) { console.error(e); }
+        }
+
+        function viewEntity(ip) { window.location.href = `/entity?id=${ip}&type=ip`; }
+        function filterTable() { const search = document.getElementById('searchInput').value.toLowerCase(); renderRiskTable(allEntities.filter(e => e.ip.toLowerCase().includes(search))); }
+
+        refreshAll();
+        setInterval(refreshAll, 30000);
+    </script>
+</body>
+</html>

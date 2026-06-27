@@ -1,0 +1,5 @@
+<!DOCTYPE html>
+<html><head><title>Analytics Dashboard</title><style>body{font-family:Arial;background:#1a1a2e;color:white;}</style></head>
+<body><h1>ML Analytics Dashboard</h1><div id="data">Loading...</div>
+<script>fetch('/api/ueba/analytics/insights').then(r=>r.json()).then(d=>{document.getElementById('data').innerHTML=JSON.stringify(d);});</script></body>
+</html>

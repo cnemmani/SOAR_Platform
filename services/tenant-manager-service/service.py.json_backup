@@ -1,0 +1,155 @@
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+import json, os, sqlite3
+from datetime import datetime
+
+app = Flask(__name__)
+CORS(app)
+
+DATA_FILE = '/home/ubuntu/soar-dashboard/microservices/tenants_data.json'
+AUDIT_DB = '/home/ubuntu/soar-dashboard/tenants_audit.db'
+
+DEFAULTS = {
+    'tenants': {
+        'global': {'id':'global','name':'Global (All Tenants)','description':'Cross-tenant visibility','status':'active','settings':{'max_users':50,'max_agents':500}},
+        'cokpit': {'id':'cokpit','name':'Cokpit Division','description':'Cokpit environments','status':'active','settings':{'max_users':20,'max_agents':50}},
+        'zelarsoft': {'id':'zelarsoft','name':'ZelarSoft Corp','description':'ZelarSoft enterprise','status':'active','settings':{'max_users':30,'max_agents':100}},
+        'vps': {'id':'vps','name':'VPS Infrastructure','description':'Cloud VPS hosting','status':'active','settings':{'max_users':10,'max_agents':25}}
+    },
+    'roles': {
+        'admin': {'name':'Administrator','permissions':['*'],'level':100},
+        'security_analyst': {'name':'Security Analyst','permissions':['view_all_alerts','block_ips','run_pipeline','export_data'],'level':70},
+        'soc_operator': {'name':'SOC Operator','permissions':['view_all_alerts','block_ips','run_pipeline'],'level':50},
+        'viewer': {'name':'Viewer','permissions':['view_own_alerts'],'level':20}
+    },
+    'users': {
+        'admin': {'username':'admin','role':'admin','tenant':'global','display_name':'Administrator'},
+        'analyst': {'username':'analyst','role':'security_analyst','tenant':'cokpit','display_name':'Security Analyst'},
+        'operator': {'username':'operator','role':'soc_operator','tenant':'zelarsoft','display_name':'SOC Operator'},
+        'viewer': {'username':'viewer','role':'viewer','tenant':'vps','display_name':'Viewer'}
+    }
+}
+
+def init_audit_db():
+    conn = sqlite3.connect(AUDIT_DB)
+    conn.execute('''CREATE TABLE IF NOT EXISTS audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT, action TEXT, target TEXT, user TEXT
+    )''')
+    conn.commit()
+    conn.close()
+
+def add_audit(action, target, user='admin'):
+    conn = sqlite3.connect(AUDIT_DB)
+    conn.execute("INSERT INTO audit_log (timestamp,action,target,user) VALUES (?,?,?,?)",
+                 (datetime.now().isoformat(), action, target, user))
+    conn.commit()
+    conn.close()
+
+init_audit_db()
+
+def load(): 
+    if os.path.exists(DATA_FILE):
+        try: return json.load(open(DATA_FILE))
+        except: pass
+    return json.loads(json.dumps(DEFAULTS))
+
+def save(d): json.dump(d, open(DATA_FILE,'w'), indent=2)
+
+data = load()
+
+@app.route('/health')
+def health(): return jsonify({'status':'healthy','service':'tenant-manager','tenants':len(data['tenants']),'users':len(data['users'])})
+
+@app.route('/audit')
+def audit():
+    conn = sqlite3.connect(AUDIT_DB)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT 100").fetchall()
+    conn.close()
+    return jsonify({'audit_log': [dict(r) for r in rows], 'total': len(rows)})
+
+@app.route('/tenants')
+def tenants(): return jsonify({'tenants':list(data['tenants'].values()),'total':len(data['tenants'])})
+
+@app.route('/tenants', methods=['POST'])
+def create_tenant():
+    t=request.get_json()
+    if not t or not t.get('id'): return jsonify({'error':'ID required'}),400
+    tid=t['id'].lower().replace(' ','_')
+    data['tenants'][tid]={'id':tid,'name':t.get('name',tid),'description':t.get('description',''),'status':'active','settings':t.get('settings',{})}
+    add_audit('CREATE_TENANT', tid); save(data)
+    return jsonify({'status':'created','tenant':data['tenants'][tid]})
+
+@app.route('/tenants/<tid>', methods=['PUT'])
+def update_tenant(tid):
+    if tid not in data['tenants']: return jsonify({'error':'Not found'}),404
+    t=request.get_json()
+    if t:
+        for k in ['name','description','status','settings']:
+            if k in t: data['tenants'][tid][k]=t[k]
+        add_audit('UPDATE_TENANT', tid); save(data)
+    return jsonify({'status':'updated'})
+
+@app.route('/tenants/<tid>', methods=['DELETE'])
+def delete_tenant(tid):
+    if tid=='global': return jsonify({'error':'Cannot delete global'}),400
+    if tid in data['tenants']:
+        add_audit('DELETE_TENANT', tid); del data['tenants'][tid]; save(data)
+        return jsonify({'status':'deleted'})
+    return jsonify({'error':'Not found'}),404
+
+@app.route('/users')
+def users(): return jsonify({'users':[{'username':u['username'],'role':u['role'],'tenant':u.get('tenant','global'),'display_name':u.get('display_name',''),'email':u.get('email',''),'status':u.get('status','active')} for u in data['users'].values()],'total':len(data['users'])})
+
+@app.route('/users', methods=['POST'])
+def create_user():
+    u=request.get_json()
+    if not u or not u.get('username'): return jsonify({'error':'Username required'}),400
+    uname=u['username'].lower()
+    data['users'][uname]={'username':uname,'role':u.get('role','viewer'),'tenant':u.get('tenant','global'),'display_name':u.get('display_name',uname),'email':u.get('email',''),'status':'active','password':u.get('password','tenant123')}
+    add_audit('CREATE_USER', uname); save(data)
+    return jsonify({'status':'created'})
+
+@app.route('/users/<uname>', methods=['PUT'])
+def update_user(uname):
+    if uname not in data['users']: return jsonify({'error':'Not found'}),404
+    u=request.get_json()
+    if u:
+        for k in ['role','tenant','display_name','email','status','password']:
+            if k in u: data['users'][uname][k]=u[k]
+        add_audit('UPDATE_USER', uname); save(data)
+    return jsonify({'status':'updated'})
+
+@app.route('/users/<uname>', methods=['DELETE'])
+def delete_user(uname):
+    if uname=='admin': return jsonify({'error':'Cannot delete admin'}),400
+    if uname in data['users']:
+        add_audit('DELETE_USER', uname); del data['users'][uname]; save(data)
+        return jsonify({'status':'deleted'})
+    return jsonify({'error':'Not found'}),404
+
+@app.route('/roles')
+def roles(): return jsonify({'roles':data['roles']})
+
+@app.route('/permissions')
+def permissions(): return jsonify({'available_permissions':['view_all_alerts','view_own_alerts','block_ips','isolate_agents','modify_alerts','run_pipeline','export_data','manage_policies','manage_users','manage_tenants','view_all_tenants','view_compliance','configure_integrations']})
+
+
+@app.route('/agents')
+def get_agent_tenant_map():
+    mappings = {"Cokpit_": "cokpit", "ZLRWIN": "zelarsoft", "ZLR": "zelarsoft", "zelar": "zelarsoft", "vps-": "vps"}
+    return jsonify({"mappings": mappings, "tenants": list(set(mappings.values()))})
+
+@app.route('/resolve-tenant/<agent_name>')
+def resolve_tenant(agent_name):
+    mappings = {"Cokpit_": "cokpit", "ZLRWIN": "zelarsoft", "ZLR": "zelarsoft", "zelar": "zelarsoft", "vps-": "vps"}
+    for pattern, tenant in mappings.items():
+        if pattern in agent_name:
+            return jsonify({"agent": agent_name, "tenant": tenant, "pattern": pattern})
+    return jsonify({"agent": agent_name, "tenant": "global", "pattern": "default"})
+
+if __name__=='__main__':
+
+    print(f"🏢 Tenant Manager (Port 8029) | Audit: SQLite")
+    app.run(host='0.0.0.0', port=8029, debug=False)
