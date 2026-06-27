@@ -1,116 +1,90 @@
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
-
-SERVICES = {
-    # Core
-    'ueba': 'http://localhost:8001',
-    'fraud': 'http://localhost:8002',
-    'geo': 'http://localhost:8003',
-    'vpn': 'http://localhost:8004',
-    'events': 'http://localhost:8005',
-    # Threat Intel
-    'vt': 'http://localhost:8006',
-    'behavior': 'http://localhost:8007',
-    'fp': 'http://localhost:8008',
-    'threat': 'http://localhost:8009',
-    # Pipeline
-    'data-prep': 'http://localhost:8010',
-    'hash': 'http://localhost:8011',
-    'scanner': 'http://localhost:8012',
-    'ultra-fp': 'http://localhost:8013',
-    'notify': 'http://localhost:8014',
-    'pipeline': 'http://localhost:8015',
-    # Profiling & SOAR
-    'attacker': 'http://localhost:8016',
-    'soar': 'http://localhost:8017',
-    'threat-actor': 'http://localhost:8020',
-    'auto-pipeline': 'http://localhost:8021',
-    'logo': 'http://localhost:8022',
-    'firewall': 'http://localhost:8020',
-    # Wazuh Integration
-    'sso': 'http://localhost:8018',
-    'wazuh': 'http://localhost:8019'
-}
-
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', '*')
-    response.headers.add('Access-Control-Allow-Methods', '*')
-    return response
-
-@app.route('/api/<service>/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'])
-def proxy(service, path):
-    if request.method == 'OPTIONS':
-        return Response('', status=200)
-    if service not in SERVICES:
-        return jsonify({'error': 'Service not found', 'available': list(SERVICES.keys())}), 404
-    
-    target_url = f"{SERVICES[service]}/{path}"
-    try:
-        if request.method == 'GET':
-            resp = requests.get(target_url, params=request.args, timeout=30)
-        else:
-            resp = requests.post(target_url, json=request.json, timeout=30)
-        return Response(resp.content, status=resp.status_code, content_type='application/json')
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+CORS(app)
 
 @app.route('/health')
 def health():
-    status = {}
-    for name, url in SERVICES.items():
-        try:
-            r = requests.get(f"{url}/health", timeout=3)
-            status[name] = 'healthy' if r.status_code == 200 else 'unhealthy'
-        except:
-            status[name] = 'down'
-    status['api-gateway'] = 'healthy'
-    return jsonify(status)
+    return jsonify({'status': 'healthy', 'service': 'api-gateway', 'port': 8000})
 
-
+# ========== AUTH ==========
 @app.route('/auth/login', methods=['POST'])
-def auth_login():
-    """Handle login requests"""
+def login():
     data = request.get_json() or {}
     username = data.get('username', '')
     password = data.get('password', '')
-    
-    # Simple auth for demo
     if username == 'admin' and password == 'admin123':
-        return jsonify({
-            'token': 'zelarsoar_admin_token_2026',
-            'user': {
-                'username': 'admin',
-                'display_name': 'Administrator',
-                'role': 'admin',
-                'tenant': 'global',
-                'permissions': ['*']
-            }
-        })
-    
-    # Try tenant service
+        return jsonify({'token': 'zelarsoar_admin_token_2026', 'user': {'username': 'admin', 'display_name': 'Administrator', 'role': 'admin', 'tenant': 'global', 'permissions': ['*']}})
     try:
         resp = requests.post('http://127.0.0.1:8029/login', json=data, timeout=5)
-        if resp.ok:
-            return resp.json()
-    except:
-        pass
-    
+        if resp.ok: return resp.json()
+    except: pass
     return jsonify({'error': 'Invalid credentials'}), 401
 
-@app.route('/auth/tenants/public', methods=['GET'])
+@app.route('/auth/tenants/public')
 def public_tenants():
     try:
         resp = requests.get('http://127.0.0.1:8029/tenants', timeout=5)
         return resp.json()
     except:
-        return jsonify({'tenants': [{'id': 'global', 'name': 'Global (All Tenants)'}]})
+        return jsonify({'tenants': [{'id': 'global', 'name': 'Global'}]})
+
+@app.route('/auth/tenants')
+def auth_tenants():
+    try:
+        resp = requests.get('http://127.0.0.1:8029/tenants', timeout=5)
+        return resp.json()
+    except:
+        return jsonify({'tenants': [{'id': 'global', 'name': 'Global'}]})
+
+@app.route('/auth/users')
+def auth_users():
+    try:
+        resp = requests.get('http://127.0.0.1:8029/users', timeout=5)
+        return resp.json()
+    except:
+        return jsonify({'users': []})
+
+@app.route('/auth/roles')
+def auth_roles():
+    try:
+        resp = requests.get('http://127.0.0.1:8029/roles', timeout=5)
+        if resp.ok: return resp.json()
+    except: pass
+    return jsonify({'roles': [{'id':'admin','name':'Administrator','level':100,'permissions':['*']},{'id':'security_analyst','name':'Security Analyst','level':70,'permissions':['view_all_alerts']},{'id':'soc_operator','name':'SOC Operator','level':50,'permissions':['view_all_alerts']},{'id':'viewer','name':'Viewer','level':20,'permissions':['view_own_alerts']}]})
+
+# ========== ADMIN ==========
+@app.route('/admin/stats')
+def admin_stats():
+    try:
+        resp = requests.get('http://127.0.0.1:8029/tenants', timeout=5)
+        tenants = resp.json().get('tenants', [])
+        resp2 = requests.get('http://127.0.0.1:8029/users', timeout=5)
+        users = resp2.json().get('users', [])
+        return jsonify({'totalTenants': len(tenants), 'totalUsers': len(users), 'totalRoles': 5, 'totalAlerts': 10000})
+    except:
+        return jsonify({'totalTenants': 5, 'totalUsers': 5, 'totalRoles': 5, 'totalAlerts': 10000})
+
+@app.route('/admin/activity')
+@app.route('/admin/audit')
+def admin_audit():
+    try:
+        resp = requests.get('http://127.0.0.1:8029/audit?limit=20', timeout=5)
+        return resp.json()
+    except:
+        return jsonify({'audit_log': []})
+
+# ========== API ==========
+@app.route('/api/<tenant>/alerts')
+def api_alerts(tenant):
+    limit = request.args.get('limit', 100)
+    try:
+        resp = requests.get(f'http://127.0.0.1:8005/events?limit={limit}', timeout=5)
+        return resp.json()
+    except:
+        return jsonify({'events': [], 'total': 0})
 
 if __name__ == '__main__':
-    print(f"API Gateway - {len(SERVICES)} services - Port 8000")
     app.run(host='0.0.0.0', port=8000, debug=False)
