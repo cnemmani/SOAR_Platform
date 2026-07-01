@@ -25,11 +25,28 @@ def add_cors(response):
 def handle_preflight():
     if request.method == 'OPTIONS':
         from flask import make_response
-        r = make_response()
-        r.headers['Access-Control-Allow-Origin'] = '*'
-        r.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,X-Tenant-ID'
-        r.headers['Access-Control-Allow-Methods'] = 'GET,PUT,POST,DELETE,OPTIONS'
-        return r, 200
+
+def resolve_tenant(agent_name):
+    """Resolve tenant from agent_mapping table"""
+    if not agent_name:
+        return 'global'
+    try:
+        import sqlite3, re
+        conn = sqlite3.connect('/home/ubuntu/soar-dashboard/zelarsoar.db')
+        rows = conn.execute("SELECT tenant_id, agent_name FROM agent_mapping").fetchall()
+        conn.close()
+        for tenant, pattern in rows:
+            regex = '^' + pattern.replace('%', '.*').replace('_', '.') + '$'
+            if re.match(regex, agent_name, re.IGNORECASE):
+                return tenant
+    except:
+        pass
+    return 'global'
+    r = make_response()
+    r.headers['Access-Control-Allow-Origin'] = '*'
+    r.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,X-Tenant-ID'
+    r.headers['Access-Control-Allow-Methods'] = 'GET,PUT,POST,DELETE,OPTIONS'
+    return r, 200
 
 @app.route('/health')
 def health():
@@ -46,6 +63,55 @@ def health():
 
 @app.route('/agents')
 def get_agents():
+    tenant = request.args.get('tenant', 'global')
+    conn = get_db()
+    
+    if tenant == 'global':
+        agents = conn.execute("""
+            SELECT id, name, type, os, status, version, last_seen, created, 
+                   COALESCE(tenant,'global') as tenant, tags, ip, connection_method
+            FROM agents ORDER BY name
+        """).fetchall()
+    else:
+        agents = conn.execute("""
+            SELECT id, name, type, os, status, version, last_seen, created,
+                   COALESCE(tenant,'global') as tenant, tags, ip, connection_method
+            FROM agents 
+            WHERE tenant=? OR tenant='global' OR tenant IS NULL OR tenant=''
+            ORDER BY name
+        """, (tenant,)).fetchall()
+    
+    # Resolve tenant for agents without one using agent_mapping
+    agent_list = []
+    for a in agents:
+        agent_dict = dict(a)
+        if not agent_dict.get('tenant') or agent_dict['tenant'] == 'global':
+            resolved = resolve_tenant(agent_dict.get('name', agent_dict.get('id', '')))
+            agent_dict['tenant'] = resolved
+        agent_list.append(agent_dict)
+    
+    # STRICT tenant filter for non-global
+    if tenant != 'global':
+        agent_list = [a for a in agent_list if a.get('tenant') == tenant]
+    
+    # Get tenant distribution
+    tenant_counts = {}
+    for a in agent_list:
+        t = a['tenant'] or 'global'
+        tenant_counts[t] = tenant_counts.get(t, 0) + 1
+    
+    online = sum(1 for a in agent_list if a['status'] == 'online')
+    
+    conn.close()
+    
+    return jsonify({
+        'total': len(agent_list),
+        'online': online,
+        'offline': len(agent_list) - online,
+        'tenant': tenant,
+        'tenant_distribution': tenant_counts,
+        'agents': agent_list
+    })
     tenant = request.args.get('tenant', 'global')
     conn = get_db()
     
