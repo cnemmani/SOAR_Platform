@@ -37,6 +37,81 @@ stats = {
 
 # POWERFUL detection patterns
 DETECTION_RULES = {
+    # URL Manipulation
+    "safelinks_obfuscation": {
+        "patterns": ["safelinks.protection.outlook.com"],
+        "risk": 25, "category": "URL_MANIPULATION", "severity": "high",
+        "description": "Microsoft ATP Safelinks - real URL destination hidden"
+    },
+    "url_shortener": {
+        "patterns": ["shorturl.fm", "bit.ly", "tinyurl.com", "t.co", "ow.ly", "is.gd", "buff.ly", "rb.gy"],
+        "risk": 30, "category": "URL_MANIPULATION", "severity": "high",
+        "description": "URL shortener detected - cannot verify destination"
+    },
+    "open_redirect": {
+        "patterns": ["redirect=", "url=", "return_url=", "redirect_uri=", "callback="],
+        "risk": 20, "category": "URL_MANIPULATION", "severity": "medium",
+        "description": "Open redirect parameter - possible phishing chain"
+    },
+    # Social Engineering
+    "spoofed_moderation": {
+        "patterns": ["please moderate", "comment.*waiting", "approve.*comment", "wp-admin/comment", "moderation panel", "pending comment"],
+        "risk": 25, "category": "SOCIAL_ENGINEERING", "severity": "high",
+        "description": "Fake comment moderation email - common phishing template"
+    },
+    "ceo_impersonation": {
+        "patterns": ["i am the ceo", "from the ceo", "ceo request", "executive request", "urgent wire transfer", "from the desk of"],
+        "risk": 30, "category": "BEC_FRAUD", "severity": "critical",
+        "description": "CEO/Executive impersonation - BEC attack"
+    },
+    "fake_invoice": {
+        "patterns": ["invoice attached", "payment overdue", "outstanding invoice", "wire transfer", "bank details changed", "update payment"],
+        "risk": 25, "category": "FINANCIAL_FRAUD", "severity": "high",
+        "description": "Fake invoice or payment request"
+    },
+    "urgency_tactics": {
+        "patterns": ["urgent", "immediately", "asap", "action required", "limited time", "expires", "deadline", "last chance"],
+        "risk": 15, "category": "SOCIAL_ENGINEERING", "severity": "medium",
+        "description": "Urgency pressure - psychological manipulation"
+    },
+    "fear_tactics": {
+        "patterns": ["account.*locked", "account.*suspended", "security.*breach", "unauthorized.*access"],
+        "risk": 20, "category": "SOCIAL_ENGINEERING", "severity": "high",
+        "description": "Fear tactics - emotional manipulation"
+    },
+    # Indicators
+    "external_ip": {
+        "patterns": ["ip address:.*[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}"],
+        "risk": 10, "category": "INDICATOR", "severity": "low",
+        "description": "External IP address embedded in email"
+    },
+    "multiple_action_links": {
+        "patterns": ["approve it:.*trash it:.*spam it:"],
+        "risk": 15, "category": "SOCIAL_ENGINEERING", "severity": "medium",
+        "description": "Multiple action links - legitimate emails use single link"
+    },
+    "excessive_urls": {
+        "patterns": ["(https?://[^ ]+){6,}"],
+        "risk": 15, "category": "INDICATOR", "severity": "medium",
+        "description": "Excessive URLs in email body"
+    },
+    "free_email_author": {
+        "patterns": ["@gmail.com.*comment", "@yahoo.com.*comment", "@outlook.com.*comment"],
+        "risk": 10, "category": "INDICATOR", "severity": "low",
+        "description": "Random free email provider - likely spam bot"
+    },
+    "credential_phishing": {
+        "patterns": ["verify your account", "update your password", "login.*required", "credential.*expired"],
+        "risk": 25, "category": "PHISHING", "severity": "high",
+        "description": "Credential harvesting attempt"
+    },
+    "gift_card_scam": {
+        "patterns": ["gift card", "apple card", "google play card", "amazon card", "buy.*gift"],
+        "risk": 25, "category": "FINANCIAL_FRAUD", "severity": "high",
+        "description": "Gift card scam detected"
+    },
+    # Original patterns kept below
+
     # URL Shorteners (masked malicious links)
     'url_shortener': {
         'patterns': [r'shorturl\.\w+', r'bit\.ly', r'tinyurl\.com', r't\.co', r'ow\.ly', 
@@ -97,6 +172,27 @@ DETECTION_RULES = {
         'risk': 25,
         'description': 'Known malicious IP address'
     },
+
+    "masked_url": {
+        "patterns": ["shorturl\.fm", "bit\.ly", "tinyurl\.com", "short\.gy"],
+        "risk": 25, "category": "OBFUSCATION",
+        "description": "Masked URL via shortener service"
+    },
+    "tracking_url": {
+        "patterns": ["safelinks\.protection\.outlook\.com", "urldefense\.com"],
+        "risk": 20, "category": "OBFUSCATION",
+        "description": "Obfuscated/tracking URL detected"
+    },
+    "fake_approval": {
+        "patterns": ["approve.*it:.*http", "trash.*it:.*http", "spam.*it:.*http"],
+        "risk": 20, "category": "SOCIAL_ENGINEERING",
+        "description": "Fake approve/trash/spam links"
+    },
+    "known_malicious_ip": {
+        "patterns": ["81\.12\.124\.150"],
+        "risk": 15, "category": "THREAT_INTEL",
+        "description": "Known malicious IP address"
+    }
 }
 
 def analyze_email(email_data):
@@ -151,7 +247,7 @@ def scan_mail_logs():
         for line in result.stdout.strip().split('\n'):
             if not line.strip(): continue
             email_data = {'subject': '', 'body': line, 'sender': '', 'source': 'postfix_mta', 'timestamp': datetime.now().isoformat()}
-            ip_match = re.search(r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b', line)
+            ip_match = re.search(r'\b([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})\b', line)
             if ip_match: email_data['sender_ip'] = ip_match.group(1)
             result = analyze_email(email_data)
             if result['risk_score'] >= 20:

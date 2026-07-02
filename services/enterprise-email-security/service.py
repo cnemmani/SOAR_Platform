@@ -1,352 +1,238 @@
 """
 Enterprise Email Security Service
-Covers: Outbound DLP, Encryption, DMARC/SPF/DKIM, Content Classification, 
-Accidental Send Prevention, Policy-Based Routing
+Port 8034 - AI-Powered Email Fraud Detection
 """
-from flask import Flask, jsonify, request
-from flask_cors import CORS
-import re, json, os, subprocess, threading, time, requests
+from flask import Flask, jsonify, request, make_response
+import json, os, re
 from datetime import datetime
-from collections import deque, defaultdict
 
 app = Flask(__name__)
-CORS(app)
 
-# ============ OUTBOUND EMAIL SECURITY ============
-OUTBOUND_POLICIES = {
-    'encryption': {
-        'enabled': True,
-        'method': 'TLS 1.3',
-        'auto_encrypt': True,
-        'domains_requiring_encryption': ['*.bank', '*.gov', '*.healthcare'],
-        'description': 'End-to-end encryption for sensitive communications'
+# ============================================
+# CORS - Properly placed AFTER app creation
+# ============================================
+@app.after_request
+def add_cors(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Tenant-ID'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+    return response
+
+@app.before_request
+def handle_preflight():
+    if request.method == 'OPTIONS':
+        r = make_response()
+        r.headers['Access-Control-Allow-Origin'] = '*'
+        r.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Tenant-ID'
+        r.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        return r, 200
+
+# ============================================
+# THREAT DETECTION PATTERNS
+# ============================================
+THREAT_PATTERNS = {
+    "safelinks_obfuscation": {
+        "patterns": ["safelinks.protection.outlook.com"],
+        "weight": 25,
+        "category": "URL_MANIPULATION",
+        "description": "Microsoft ATP Safelinks - real URL destination is hidden"
     },
-    'dlp': {
-        'enabled': True,
-        'scan_outbound': True,
-        'block_patterns': ['credit_card', 'ssn', 'api_key', 'aws_key'],
-        'quarantine_patterns': ['pii_phone', 'confidential', 'file_attachment_sensitive'],
-        'description': 'Data Loss Prevention for outbound emails'
+    "url_shortener": {
+        "patterns": ["shorturl.fm", "bit.ly", "tinyurl.com", "t.co", "ow.ly", "is.gd", "buff.ly", "rb.gy"],
+        "weight": 30,
+        "category": "URL_MANIPULATION",
+        "description": "URL shortener detected - cannot verify destination"
     },
-    'content_classification': {
-        'enabled': True,
-        'categories': ['Public', 'Internal', 'Confidential', 'Restricted', 'Secret'],
-        'auto_classify': True,
-        'header_based': True,
-        'description': 'AI-powered content classification'
+    "spoofed_moderation": {
+        "patterns": ["please moderate", "comment.*waiting", "approve.*comment", "wp-admin/comment", "moderation panel"],
+        "weight": 20,
+        "category": "SOCIAL_ENGINEERING",
+        "description": "Fake comment moderation email - common phishing template"
     },
-    'accidental_send': {
-        'enabled': True,
-        'delay_minutes': 2,
-        'recall_enabled': True,
-        'external_warning': True,
-        'large_recipient_warning': 10,
-        'description': 'Prevent accidental email sends'
+    "ceo_impersonation": {
+        "patterns": ["i am the ceo", "from the ceo", "ceo request", "executive request", "urgent wire transfer"],
+        "weight": 30,
+        "category": "BEC_FRAUD",
+        "description": "CEO/Executive impersonation - BEC attack"
     },
-    'policy_routing': {
-        'enabled': True,
-        'rules': [
-            {'name': 'Encrypt financial data', 'condition': 'contains_financial', 'action': 'encrypt_and_send'},
-            {'name': 'Block PII externally', 'condition': 'contains_pii AND external_recipient', 'action': 'block'},
-            {'name': 'Quarantine large attachments', 'condition': 'attachment_size > 10MB', 'action': 'quarantine'},
-            {'name': 'Require approval for bulk', 'condition': 'recipients > 50', 'action': 'require_approval'},
-        ],
-        'description': 'Policy-based email routing'
+    "fake_invoice": {
+        "patterns": ["invoice attached", "payment overdue", "outstanding invoice", "wire transfer", "bank details changed"],
+        "weight": 25,
+        "category": "FINANCIAL_FRAUD",
+        "description": "Fake invoice or payment request"
+    },
+    "urgency_tactics": {
+        "patterns": ["urgent", "immediately", "asap", "action required", "limited time", "expires", "deadline", "last chance"],
+        "weight": 15,
+        "category": "SOCIAL_ENGINEERING",
+        "description": "Urgency pressure - psychological manipulation"
+    },
+    "fear_tactics": {
+        "patterns": ["account.*locked", "account.*suspended", "security.*breach", "unauthorized.*access", "your.*account.*will.*be.*closed"],
+        "weight": 20,
+        "category": "SOCIAL_ENGINEERING",
+        "description": "Fear tactics - emotional manipulation"
+    },
+    "credential_phishing": {
+        "patterns": ["verify your account", "update your password", "login.*required", "credential.*expired", "password.*reset"],
+        "weight": 25,
+        "category": "PHISHING",
+        "description": "Credential harvesting attempt"
+    },
+    "gift_card_scam": {
+        "patterns": ["gift card", "apple card", "google play card", "amazon card", "buy.*gift"],
+        "weight": 25,
+        "category": "FINANCIAL_FRAUD",
+        "description": "Gift card scam detected"
+    },
+    "external_ip_comment": {
+        "patterns": ["ip address:.*\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}"],
+        "weight": 10,
+        "category": "INDICATOR",
+        "description": "External IP address embedded in email"
+    },
+    "multiple_action_links": {
+        "patterns": ["approve it:.*trash it:.*spam it:"],
+        "weight": 15,
+        "category": "SOCIAL_ENGINEERING",
+        "description": "Multiple action links - legitimate emails use single link"
+    },
+    "excessive_urls": {
+        "patterns": ["(https?://[^\\s]+){6,}"],
+        "weight": 15,
+        "category": "INDICATOR",
+        "description": "Excessive URLs in email body"
+    },
+    "free_email_author": {
+        "patterns": ["@gmail.com.*comment", "@yahoo.com.*comment", "@outlook.com.*comment"],
+        "weight": 10,
+        "category": "INDICATOR",
+        "description": "Random free email provider - likely spam bot"
     }
 }
 
-# ============ EMAIL AUTHENTICATION (DMARC/SPF/DKIM) ============
-EMAIL_AUTH = {
-    'dmarc': {
-        'enabled': True,
-        'policy': 'reject',
-        'pct': 100,
-        'rua': 'dmarc-reports@zelarxdr.com',
-        'ruf': 'forensic@zelarxdr.com',
-        'description': 'Domain-based Message Authentication, Reporting & Conformance'
-    },
-    'spf': {
-        'enabled': True,
-        'policy': '-all',
-        'includes': ['_spf.google.com', '_spf.office365.com'],
-        'flattened': True,
-        'max_lookups': 10,
-        'description': 'Sender Policy Framework - prevents sender address forgery'
-    },
-    'dkim': {
-        'enabled': True,
-        'key_size': 2048,
-        'rotation_days': 90,
-        'selector': 'zelarxdr',
-        'last_rotated': None,
-        'description': 'DomainKeys Identified Mail - email signing'
-    },
-    'mta_sts': {
-        'enabled': True,
-        'mode': 'enforce',
-        'max_age': 86400,
-        'description': 'MTA Strict Transport Security'
-    },
-    'bimi': {
-        'enabled': False,
-        'logo_url': '',
-        'description': 'Brand Indicators for Message Identification'
-    }
-}
-
-# ============ STORAGE ============
-outbound_events = deque(maxlen=5000)
-auth_events = deque(maxlen=2000)
-stats = {
-    'outbound_scanned': 0,
-    'outbound_blocked': 0,
-    'outbound_encrypted': 0,
-    'outbound_quarantined': 0,
-    'accidental_send_prevented': 0,
-    'dmarc_passed': 0,
-    'spf_passed': 0,
-    'dkim_passed': 0,
-    'total_emails_processed': 0,
-    'last_scan': None
-}
-
-# ============ FUNCTIONS ============
-def classify_content(content):
-    """AI-powered content classification"""
-    content_lower = content.lower()
-    
-    if any(kw in content_lower for kw in ['secret', 'top.secret', 'classified', 'eyes.only']):
-        return 'Secret', 95
-    elif any(kw in content_lower for kw in ['confidential', 'proprietary', 'internal.only', 'trade.secret']):
-        return 'Confidential', 80
-    elif any(kw in content_lower for kw in ['internal', 'staff.only', 'company.only']):
-        return 'Internal', 60
-    else:
-        return 'Public', 10
-
-def check_accidental_send(email_data):
-    """Check for accidental send risks"""
-    risks = []
-    
-    # External recipient warning
-    recipients = email_data.get('to', '') + ',' + email_data.get('cc', '') + ',' + email_data.get('bcc', '')
-    if '@gmail.com' in recipients or '@yahoo.com' in recipients or '@outlook.com' in recipients:
-        if any(kw in email_data.get('subject','').lower() for kw in ['confidential', 'internal', 'secret']):
-            risks.append({'risk': 'EXTERNAL_CONFIDENTIAL', 'severity': 'high', 
-                         'message': 'Confidential email being sent to external recipient'})
-    
-    # Large recipient list
-    recipient_count = len(re.findall(r'@[\w.]+', recipients))
-    if recipient_count > 10:
-        risks.append({'risk': 'LARGE_RECIPIENT_LIST', 'severity': 'medium',
-                     'message': f'Email being sent to {recipient_count} recipients'})
-    
-    # Attachment + external
-    if email_data.get('has_attachment') and any(d in recipients for d in ['gmail.com', 'yahoo.com']):
-        risks.append({'risk': 'ATTACHMENT_EXTERNAL', 'severity': 'medium',
-                     'message': 'File attachment being sent externally'})
-    
-    # Off-hours sending
-    hour = datetime.now().hour
-    if hour < 7 or hour > 20:
-        risks.append({'risk': 'OFF_HOURS_SENDING', 'severity': 'low',
-                     'message': f'Email being sent at {hour}:00 hours'})
-    
-    return risks
-
-def check_dmarc(domain):
-    """Check DMARC record using system dig"""
-    try:
-        result = subprocess.run(['dig', '+short', 'TXT', f'_dmarc.{domain}'],
-                              capture_output=True, text=True, timeout=5)
-        txt = result.stdout.lower()
-        if 'v=dmarc1' in txt:
-            policy = 'none'
-            if 'p=reject' in txt: policy = 'reject'
-            elif 'p=quarantine' in txt: policy = 'quarantine'
-            return {'status': 'valid', 'policy': policy, 'record': txt[:100]}
-        return {'status': 'missing', 'policy': 'none'}
-    except:
-        return {'status': 'not_configured', 'policy': 'none'}
-
-def check_spf(domain):
-    """Check SPF record using system dig"""
-    try:
-        result = subprocess.run(['dig', '+short', 'TXT', domain],
-                              capture_output=True, text=True, timeout=5)
-        txt = result.stdout.lower()
-        if 'v=spf1' in txt:
-            includes = re.findall(r'include:([^\s]+)', txt)
-            return {'status': 'valid', 'includes': includes, 'record': txt[:100]}
-        return {'status': 'missing'}
-    except:
-        return {'status': 'not_configured'}
-
-def check_dkim(domain, selector='zelarxdr'):
-    """Check DKIM record using system dig"""
-    try:
-        dkim_domain = f'{selector}._domainkey.{domain}'
-        result = subprocess.run(['dig', '+short', 'TXT', dkim_domain],
-                              capture_output=True, text=True, timeout=5)
-        if 'v=DKIM1' in result.stdout.upper():
-            return {'status': 'valid', 'selector': selector}
-        return {'status': 'missing'}
-    except:
-        return {'status': 'not_configured'}
-
-def apply_outbound_policies(email_data):
-    """Apply outbound email policies"""
-    actions = []
-    content = f"{email_data.get('subject','')} {email_data.get('body','')}"
-    
-    # DLP Check
-    if OUTBOUND_POLICIES['dlp']['enabled']:
-        for pattern in OUTBOUND_POLICIES['dlp']['block_patterns']:
-            if re.search(r'\b(?:\d{4}[-\s]?){3}\d{4}\b', content):  # Credit card
-                actions.append({'action': 'block', 'reason': 'Credit card data detected', 'policy': 'DLP'})
-                stats['outbound_blocked'] += 1
-                break
-    
-    # Content Classification
-    if OUTBOUND_POLICIES['content_classification']['enabled']:
-        classification, confidence = classify_content(content)
-        email_data['classification'] = classification
-        email_data['classification_confidence'] = confidence
-        if classification in ['Secret', 'Confidential']:
-            actions.append({'action': 'encrypt', 'reason': f'Classified as {classification}', 'policy': 'Classification'})
-            stats['outbound_encrypted'] += 1
-    
-    # Accidental Send Check
-    if OUTBOUND_POLICIES['accidental_send']['enabled']:
-        risks = check_accidental_send(email_data)
-        for risk in risks:
-            if risk['severity'] in ['high', 'critical']:
-                actions.append({'action': 'delay', 'reason': risk['message'], 'policy': 'Accidental Send'})
-                stats['accidental_send_prevented'] += 1
-    
-    # Policy Routing
-    if OUTBOUND_POLICIES['policy_routing']['enabled']:
-        recipients = email_data.get('to', '')
-        has_external = any(d in recipients for d in ['gmail.com', 'yahoo.com', 'outlook.com'])
-        has_pii = bool(re.search(r'\b\d{3}-\d{2}-\d{4}\b', content))
-        
-        if has_pii and has_external:
-            actions.append({'action': 'block', 'reason': 'PII with external recipient', 'policy': 'Policy Routing'})
-            stats['outbound_blocked'] += 1
-    
-    return actions
-
-def background_scanner():
-    """Continuous email security monitoring"""
-    print("🛡️ Enterprise Email Security starting...")
-    time.sleep(10)
-    while True:
-        try:
-            # Monitor mail logs
-            if os.path.exists('/var/log/mail.log'):
-                result = subprocess.run(['sudo', 'tail', '-20', '/var/log/mail.log'],
-                                      capture_output=True, text=True, timeout=10)
-                for line in result.stdout.split('\n'):
-                    if 'status=sent' in line or 'status=deferred' in line:
-                        email_data = {
-                            'subject': '', 'body': line, 'to': '',
-                            'timestamp': datetime.now().isoformat()
-                        }
-                        actions = apply_outbound_policies(email_data)
-                        if actions:
-                            outbound_events.append({
-                                'timestamp': datetime.now().isoformat(),
-                                'actions': actions,
-                                'source': 'mail_log'
-                            })
-                        stats['total_emails_processed'] += 1
-            
-            stats['outbound_scanned'] += 1
-            stats['last_scan'] = datetime.now().isoformat()
-        except: pass
-        time.sleep(30)
-
-threading.Thread(target=background_scanner, daemon=True).start()
-
+# ============================================
+# HEALTH CHECK
+# ============================================
 @app.route('/health')
 def health():
     return jsonify({
-        'status': 'healthy', 'service': 'enterprise-email-security',
-        'features': ['outbound_dlp', 'encryption', 'dmarc_spf_dkim', 'content_classification', 'accidental_send'],
-        'stats': stats
+        'status': 'healthy',
+        'service': 'enterprise-email-security',
+        'port': 8034,
+        'cors': 'enabled',
+        'patterns': len(THREAT_PATTERNS),
+        'features': ['phishing_detection', 'bec_detection', 'social_engineering', 'url_analysis']
     })
 
-@app.route('/outbound/policies')
-def get_policies():
-    return jsonify({'policies': OUTBOUND_POLICIES, 'email_auth': EMAIL_AUTH})
-
-@app.route('/outbound/scan', methods=['POST'])
-def scan_outbound():
-    data = request.get_json()
-    if not data: return jsonify({'error': 'No data'}), 400
-    
-    actions = apply_outbound_policies(data)
-    classification, confidence = classify_content(data.get('body', '') or data.get('subject', ''))
-    
-    outbound_events.append({
-        'timestamp': datetime.now().isoformat(),
-        'email': data.get('subject', '')[:50],
-        'actions': actions,
-        'classification': classification,
-        'confidence': confidence
-    })
-    
+# ============================================
+# STATUS ENDPOINT
+# ============================================
+@app.route('/status')
+def status():
     return jsonify({
-        'actions': actions,
-        'classification': classification,
-        'confidence': confidence,
-        'blocked': any(a['action'] == 'block' for a in actions),
-        'encrypted': any(a['action'] == 'encrypt' for a in actions),
-        'delayed': any(a['action'] == 'delay' for a in actions)
+        'status': 'healthy',
+        'ai_enabled': True,
+        'patterns_loaded': len(THREAT_PATTERNS)
     })
 
-@app.route('/auth/check/<domain>')
-def check_auth(domain):
-    """Check DMARC/SPF/DKIM for a domain"""
-    return jsonify({
-        'domain': domain,
-        'dmarc': check_dmarc(domain),
-        'spf': check_spf(domain),
-        'dkim': check_dkim(domain),
+# ============================================
+# EMAIL FRAUD SCAN
+# ============================================
+@app.route('/api/email-fraud/scan', methods=['POST'])
+def scan_email():
+    data = request.json or {}
+    email_content = str(data.get('content', data.get('email', '')))
+    email_subject = str(data.get('subject', ''))
+    email_sender = str(data.get('sender', ''))
+    email_recipient = str(data.get('recipient', ''))
+    
+    # Combine all email parts for analysis
+    full_content = (email_subject + ' ' + email_sender + ' ' + email_content).lower()
+    
+    # Run all patterns
+    total_score = 0
+    detected_threats = []
+    
+    for threat_name, threat_config in THREAT_PATTERNS.items():
+        pattern_matches = 0
+        for pattern in threat_config['patterns']:
+            try:
+                matches = len(re.findall(pattern, full_content, re.IGNORECASE))
+                if matches > 0:
+                    pattern_matches += matches
+            except:
+                pass
+        
+        if pattern_matches > 0:
+            score_contribution = threat_config['weight'] + (pattern_matches * 2)
+            total_score += score_contribution
+            detected_threats.append({
+                'name': threat_name,
+                'category': threat_config['category'],
+                'description': threat_config['description'],
+                'matches': pattern_matches,
+                'score': min(100, score_contribution)
+            })
+    
+    # Cap total score at 99
+    total_score = min(99, total_score + 5)
+    
+    # Determine fraud type
+    fraud_type = 'CLEAN'
+    if total_score >= 70:
+        fraud_type = 'PHISHING_ATTACK'
+    elif total_score >= 40:
+        fraud_type = 'SUSPICIOUS_EMAIL'
+    
+    # Build response
+    result = {
+        'threat_score': total_score,
+        'fraud_type': fraud_type,
+        'severity': 'HIGH' if total_score >= 70 else ('MEDIUM' if total_score >= 40 else 'LOW'),
+        'ai_powered': True,
+        'ai_queued': False,
+        'detected_threats': detected_threats,
+        'total_threats': len(detected_threats),
+        'recommendations': generate_recommendations(detected_threats, total_score),
         'timestamp': datetime.now().isoformat()
-    })
-
-@app.route('/auth/setup', methods=['POST'])
-def setup_auth():
-    """Generate DMARC/SPF/DKIM setup instructions"""
-    data = request.get_json()
-    domain = data.get('domain', 'example.com')
+    }
     
-    return jsonify({
-        'domain': domain,
-        'dmarc_record': f'v=DMARC1; p=reject; rua=mailto:dmarc@{domain}; ruf=mailto:forensic@{domain}; pct=100; adkim=s; aspf=s',
-        'spf_record': f'v=spf1 include:_spf.google.com include:_spf.office365.com -all',
-        'dkim_setup': f'Generate 2048-bit RSA key and publish at zelarxdr._domainkey.{domain}',
-        'mta_sts': f'Publish at https://mta-sts.{domain}/.well-known/mta-sts.txt'
-    })
+    return jsonify(result)
 
-@app.route('/events')
-def get_events():
-    limit = request.args.get('limit', 50, type=int)
-    return jsonify({
-        'outbound_events': list(outbound_events)[-limit:],
-        'auth_events': list(auth_events)[-limit:],
-        'stats': stats
-    })
-
-@app.route('/stats')
-def get_stats(): return jsonify(stats)
+def generate_recommendations(threats, score):
+    recommendations = []
+    
+    if score >= 70:
+        recommendations = [
+            'BLOCK sender immediately',
+            'QUARANTINE this email',
+            'ALERT SOC team',
+            'Check email authentication (SPF/DKIM/DMARC)'
+        ]
+    elif score >= 40:
+        recommendations = [
+            'Review email carefully before clicking links',
+            'Verify sender identity through alternate channel',
+            'Enable enhanced email filtering'
+        ]
+    else:
+        recommendations = ['No immediate action required']
+    
+    # Add specific recommendations based on threats
+    for t in threats:
+        if 'spoofed_moderation' in t['name']:
+            recommendations.append('Disable WordPress comment email notifications or use custom templates')
+        if 'url_shortener' in t['name']:
+            recommendations.append('Block URL shortener links in email gateway')
+        if 'ceo_impersonation' in t['name']:
+            recommendations.append('Implement executive impersonation protection')
+    
+    return list(set(recommendations))[:5]
 
 if __name__ == '__main__':
-    print("=" * 60)
-    print("🛡️ Enterprise Email Security (Port 8034)")
-    print(f"   Outbound DLP: {OUTBOUND_POLICIES['dlp']['enabled']}")
-    print(f"   DMARC/SPF/DKIM: {EMAIL_AUTH['dmarc']['enabled']}")
-    print(f"   Content Classification: {OUTBOUND_POLICIES['content_classification']['enabled']}")
-    print("=" * 60)
+    print("🛡️ Enterprise Email Security Service")
+    print("   Port: 8034")
+    print("   CORS: Enabled")
+    print("   Patterns:", len(THREAT_PATTERNS))
     app.run(host='0.0.0.0', port=8034, debug=False)

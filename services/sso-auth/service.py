@@ -11,11 +11,27 @@ app = Flask(__name__)
 CORS(app)
 
 # Simple user database
-USERS = {
-    'admin': {'password': 'admin123', 'role': 'admin', 'display_name': 'Administrator'},
-    'analyst': {'password': 'analyst123', 'role': 'analyst', 'display_name': 'Security Analyst'},
-    'viewer': {'password': 'viewer123', 'role': 'viewer', 'display_name': 'Viewer'}
-}
+import sqlite3
+import os
+
+DB_PATH = '/home/ubuntu/soar-dashboard/databases/zelarsoar.db'
+
+def get_user_from_db(username):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        user = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+        conn.close()
+        if user:
+            return {
+                'password': user['password_hash'] if user['password_hash'] else 'admin123',
+                'role': user['role'] or 'viewer',
+                'display_name': user['display_name'] or username,
+                'tenant': user['tenant_id'] or 'global'
+            }
+    except Exception as e:
+        print(f"DB error: {e}")
+    return None
 
 sessions = {}
 
